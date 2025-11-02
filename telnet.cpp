@@ -9,8 +9,6 @@
 #include <iostream>
 #include <ostream>
 
-#define BUFFER_SIZE 1024
-
 // https://datatracker.ietf.org/doc/html/rfc854
 #define WILL char(251)
 #define WONT char(252)
@@ -20,16 +18,15 @@
 
 // OPTIONS HERE
 //  https://www.iana.org/assignments/telnet-options/telnet-options.xhtml
-//  here u can find the options
 
 // always the basic request contains <IAC , (one of DO WILL), telnet-option>
 // messages ll be longer only if we want to handle specific option
-// since we deny ignore all all messages ll be only 3 bytes
+// since we deny ignore all messages ll be only 3 bytes
 // THEREFORE
 // always we will get 3 bytes
 // 1. IAC
 // 2. DO | DONT | WILL | WONT
-// 3. OPTIONS see th link above but we wont need it here
+// 3. OPTIONS see the link above but we wont need it here
 //
 // we will ignroe and deny all server requsts until server gives up and setup
 // basic backup default config
@@ -108,12 +105,12 @@ bool handleTelnetHeader(const int& sock,
                         const int& bytes,
                         char* bufferOut,
                         int& bufferOutEnd) {
-  std::cout << "HEADER READ " << bytes << " Bytes :" << std::endl;
+  std::cout << "HEADER    READ" << bytes << "Bytes :" << std::endl;
   printBytes(buffer, bytes);
 
   processTelnetHeader(buffer, bytes, bufferOut, bufferOutEnd);
 
-  std::cout << "\nSending " << bufferOutEnd << " bytes: \n";
+  std::cout << "Sending" << bufferOutEnd << "bytes: \n";
   printBytes(bufferOut, bufferOutEnd);
   if (!sendBuffer(sock, bufferOut, bufferOutEnd)) {
     perror("failed to send buffer");
@@ -131,23 +128,26 @@ bool handleTelnetMessage(const char* cmd,
                          bool isLoggedIn) {
   buffer[bytes] = '\0';
   std::cout << "Recieved string message" << "\n";
-  std::cout << buffer << "\n\n";
+  std::cout << buffer << std::endl;
 
-  std::cout << "Sending: " << cmd << std::endl;
   int sent = send(sock, cmd, strlen(cmd), 0);
   if (sent <= 0) {
     std::cout << "Error sending command " << cmd << std::endl;
     return false;
   }
-  // if we are logged in it starts repeating our cmd so we need read it wo
-  // printing out once for terminal output
+  // if we are logged in it starts repeating our cmd so we need
+  // read once to read command we send and once to read message
+  // this is just to read and skip the command repeat
   if (isLoggedIn) {
-    bytes = recv(sock, buffer, BUFFER_SIZE, 0);
-    if (bytes <= 0) {
+    buffer[bytes++] = '\n';
+    int bytes2 = recv(sock, buffer + bytes, sizeof(buffer) - bytes, 0);
+    if (bytes2 <= 0) {
       perror("failed to read second message");
       return false;
     }
+    bytes += bytes2;
   }
+  std::cout << "buffer:" << buffer << std::endl;
   return true;
 }
 
@@ -168,7 +168,7 @@ int main() {
                              // might be hanging session from previous return
                              // password,
                              username, password, "cat secret\r\n"};
-  const char** cmdPtr = commands;
+  const char* commandToSend = commands[0];
   const int cmdCnt = sizeof(commands) / sizeof(commands[0]);
 
   int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -195,14 +195,14 @@ int main() {
   std::cout << "Connected to " << serverIp << ":" << serverPort << std::endl;
 
   // this should be enuf but if u got long promtp at start u might struggle
-  char buffer[BUFFER_SIZE];     // read in buffer
-  char bufferOut[BUFFER_SIZE];  // output buffer for headers
-  int bufferOutEnd = 0;         // end of the buffer we write the headers to
-  int bytes;                    // read bytes count
+  char buffer[1024];     // read in buffer
+  char bufferOut[1024];  // output buffer for headers
+  int bufferOutEnd = 0;  // end of the buffer we write the headers to
+  int bytes;             // read bytes count
 
-  // READ ALL STARTING HEADERS AND RESPOND TO THEM WITH IGNORING
+  // Communication
   for (int i = 0;; i++) {
-    std::cout << "\n" << "READING " << i << "\n";
+    std::cout << "READING " << i << "\n";
     bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
     bufferOutEnd = 0;
     if (bytes <= 0) {
@@ -210,19 +210,21 @@ int main() {
       return 1;
     }
     if (isHeader(buffer)) {
+      std::cout << "found HEADER" << std::endl;
       if (!handleTelnetHeader(sock, buffer, bytes, bufferOut, bufferOutEnd)) {
         return 2;
       }
     } else {
-      if (cmdPtr >= commands + cmdCnt)
-        break;
-      bool isLoggedIn = cmdPtr >= commands + 1;  // do this on password sending
-      if (!handleTelnetMessage(*cmdPtr, sock, buffer, bytes, bufferOut,
+      bool isLoggedIn =
+          commandToSend >= commands[1];  // do this on password sending
+      if (!handleTelnetMessage(commandToSend, sock, buffer, bytes, bufferOut,
                                bufferOutEnd, isLoggedIn)) {
         return 3;
       }
 
-      cmdPtr++;
+      commandToSend++;
+      if (commandToSend >= commands[0] + cmdCnt)
+        break;
     }
   }
 
