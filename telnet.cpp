@@ -1,13 +1,15 @@
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <cstdio>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
-#include <netinet/in.h>
 #include <ostream>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+
+#define BUFFER_SIZE 1024
 
 // https://datatracker.ietf.org/doc/html/rfc854
 #define WILL char(251)
@@ -16,12 +18,24 @@
 #define DONT char(254)
 #define IAC char(255)
 
-// https://www.iana.org/assignments/telnet-options/telnet-options.xhtml
-// here u can find the options
+// OPTIONS HERE
+//  https://www.iana.org/assignments/telnet-options/telnet-options.xhtml
+//  here u can find the options
 
-void handleRequest(const char *msg_bytes, char *output_buffer,
-                   int &output_buffer_end) {
-
+// always the basic request contains <IAC , (one of DO WILL), telnet-option>
+// messages ll be longer only if we want to handle specific option
+// since we deny ignore all all messages ll be only 3 bytes
+// THEREFORE
+// always we will get 3 bytes
+// 1. IAC
+// 2. DO | DONT | WILL | WONT
+// 3. OPTIONS see th link above but we wont need it here
+//
+// we will ignroe and deny all server requsts until server gives up and setup
+// basic backup default config
+void handleRequest(const char* msg_bytes,
+                   char* output_buffer,
+                   int& output_buffer_end) {
   char pos0 = msg_bytes[0];
   char pos1 = msg_bytes[1];
   char pos2 = msg_bytes[2];
@@ -30,46 +44,50 @@ void handleRequest(const char *msg_bytes, char *output_buffer,
     perror("not starting with msg sync");
     return;
   }
-  switch (pos2) { // do not actually need anything here server will eventually
-                  // give up
-  default:
-    if (pos1 == DO) {
-      output_buffer[output_buffer_end++] = IAC;
-      output_buffer[output_buffer_end++] = WONT;
-      output_buffer[output_buffer_end++] = pos2;
-    } else if (pos1 == WILL) {
-      output_buffer[output_buffer_end++] = IAC;
-      output_buffer[output_buffer_end++] = DONT;
-      output_buffer[output_buffer_end++] = pos2;
-    } else {
-      perror("what is tis");
-    }
+  switch (pos2) {  // do not actually need anything here server will eventually
+                   // give up
+    default:
+      if (pos1 == DO) {
+        output_buffer[output_buffer_end++] = IAC;
+        output_buffer[output_buffer_end++] = WONT;
+        output_buffer[output_buffer_end++] = pos2;
+      } else if (pos1 == WILL) {
+        output_buffer[output_buffer_end++] = IAC;
+        output_buffer[output_buffer_end++] = DONT;
+        output_buffer[output_buffer_end++] = pos2;
+      } else {
+        perror("what is tis");
+      }
   }
 }
 
-void readHeader(const char *recieved, const int &recieved_len,
-                char *output_buffer, int &output_buffer_end) {
-  const char *ptr = recieved;
+// Reads threw recieved header and returns response data for Telnet in
+// output_buffer put buffer u recieved from Telnet here if it starts with IAC
+void processTelnetHeader(const char* recieved,
+                         const int& recieved_len,
+                         char* output_buffer,
+                         int& output_buffer_end) {
+  const char* ptr = recieved;
   for (; ptr < recieved + recieved_len * sizeof(char); ptr += sizeof(char)) {
-    if (*ptr == IAC) { // start of message
+    if (*ptr == IAC) {  // start of message
       handleRequest(ptr, output_buffer, output_buffer_end);
     }
   }
 }
 
-void printBytes(const char *bytes, const int &bytes_len) {
+void printBytes(const char* bytes, const int& bytes_len) {
   for (int i = 0; i < bytes_len; ++i) {
     // Print each byte as two hex digits
-    std::cout << std::setw(2) << std::setfill('0')
+    std::cout << std::setw(3) << std::setfill('0')
               << (static_cast<unsigned int>(
                      static_cast<unsigned char>(bytes[i])))
               << " ";
     if ((i + 1) % 3 == 0)
-      std::cout << "\n"; // optional: new line every 16 bytes
+      std::cout << "\n";  // optional: new line every 16 bytes
   }
 }
 
-bool sendBuffer(int sock, const char *buffer, int length) {
+bool sendBuffer(int sock, const char* buffer, int length) {
   int totalSent = 0;
 
   while (totalSent < length) {
@@ -85,11 +103,74 @@ bool sendBuffer(int sock, const char *buffer, int length) {
   return true;
 }
 
-int main() {
-  const char *server_ip = "192.168.50.189"; // Windows host IP
-  const int server_port = 23;
+bool handleTelnetHeader(const int& sock,
+                        const char* buffer,
+                        const int& bytes,
+                        char* bufferOut,
+                        int& bufferOutEnd) {
+  std::cout << "HEADER READ " << bytes << " Bytes :" << std::endl;
+  printBytes(buffer, bytes);
 
-  // Create socket
+  processTelnetHeader(buffer, bytes, bufferOut, bufferOutEnd);
+
+  std::cout << "\nSending " << bufferOutEnd << " bytes: \n";
+  printBytes(bufferOut, bufferOutEnd);
+  if (!sendBuffer(sock, bufferOut, bufferOutEnd)) {
+    perror("failed to send buffer");
+    return false;
+  }
+  return true;
+}
+
+bool handleTelnetMessage(const char* cmd,
+                         const int& sock,
+                         char* buffer,
+                         int& bytes,
+                         char* bufferOut,
+                         int& bufferOutEnd,
+                         bool isLoggedIn) {
+  buffer[bytes] = '\0';
+  std::cout << "Recieved string message" << "\n";
+  std::cout << buffer << "\n\n";
+
+  std::cout << "Sending: " << cmd << std::endl;
+  int sent = send(sock, cmd, strlen(cmd), 0);
+  if (sent <= 0) {
+    std::cout << "Error sending command " << cmd << std::endl;
+    return false;
+  }
+  // if we are logged in it starts repeating our cmd so we need read it wo
+  // printing out once for terminal output
+  if (isLoggedIn) {
+    bytes = recv(sock, buffer, BUFFER_SIZE, 0);
+    if (bytes <= 0) {
+      perror("failed to read second message");
+      return false;
+    }
+  }
+  return true;
+}
+
+bool isHeader(const char* buffer) {
+  return *buffer == IAC;
+}
+
+int main() {
+  // Telnet address
+  const char* serverIp = "192.168.50.189";
+  const int serverPort = 23;
+
+  // Telnet credentials
+  const char* username = "root\r\n";  //
+  const char* password = "123\r\n";
+
+  const char* commands[3] = {// if u get first password give placeholder there
+                             // might be hanging session from previous return
+                             // password,
+                             username, password, "cat secret\r\n"};
+  const char** cmdPtr = commands;
+  const int cmdCnt = sizeof(commands) / sizeof(commands[0]);
+
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) {
     perror("socket");
@@ -97,180 +178,58 @@ int main() {
   }
 
   // Server address
-  struct sockaddr_in server_addr{};
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(server_port);
-  if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
+  struct sockaddr_in serverAddr{};
+  serverAddr.sin_family = AF_INET;
+  serverAddr.sin_port = htons(serverPort);
+  if (inet_pton(AF_INET, serverIp, &serverAddr.sin_addr) <= 0) {
     perror("inet_pton");
     return 1;
   }
 
   // Connect to Telnet server
-  if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+  if (connect(sock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
     perror("connect");
     return 1;
   }
 
-  std::cout << "Connected to " << server_ip << ":" << server_port << std::endl;
+  std::cout << "Connected to " << serverIp << ":" << serverPort << std::endl;
 
-  char buffer[1024];
-  char bufferOut[1024];
-  int bufferOutEnd = 0;
+  // this should be enuf but if u got long promtp at start u might struggle
+  char buffer[BUFFER_SIZE];     // read in buffer
+  char bufferOut[BUFFER_SIZE];  // output buffer for headers
+  int bufferOutEnd = 0;         // end of the buffer we write the headers to
+  int bytes;                    // read bytes count
 
-  // HEADER 01
-  int bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
-  if (bytes <= 0) {
-    perror("failed to recive header");
-    return 1;
-  }
-  std::cout << "Received " << bytes << " bytes:\n";
-  printBytes(buffer, bytes);
-
-  readHeader(buffer, bytes, bufferOut, bufferOutEnd);
-
-  std::cout << "Sending" << bufferOutEnd << "bytes\n";
-  printBytes(bufferOut, bufferOutEnd);
-  if (!sendBuffer(sock, bufferOut, bufferOutEnd)) {
-    perror("failed to send buffer");
-    return 2;
-  }
-
-  // HEADER 02
-  bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
-  if (bytes <= 0) {
-    perror("failed to recieve next message");
-    return 3;
-  }
-
-  buffer[bytes] = '\0';
-  std::cout << "revieved new message: " << std::endl;
-
-  std::cout << buffer << std::endl;
-  printBytes(buffer, bytes);
-
-  bufferOutEnd = 0;
-  readHeader(buffer, bytes, bufferOut, bufferOutEnd);
-
-  if (!sendBuffer(sock, bufferOut, bufferOutEnd)) {
-    perror("fail");
-    return 4;
-  }
-
-  // HEADER 03
-  bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
-  if (bytes <= 0) {
-    perror("failed to recieve next message (3)");
-    return 5;
-  }
-
-  buffer[bytes] = '\0';
-  std::cout << "revieved new message: " << std::endl;
-
-  std::cout << buffer << std::endl;
-  printBytes(buffer, bytes);
-
-  bufferOutEnd = 0;
-  readHeader(buffer, bytes, bufferOut, bufferOutEnd);
-
-  if (!sendBuffer(sock, bufferOut, bufferOutEnd)) {
-    perror("fail");
-    return 6;
-  }
-
-  // login prompt
-  bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
-  if (bytes <= 0) {
-    perror("failed to recieve next message (4)");
-    return 7;
-  }
-
-  buffer[bytes] = '\0';
-  std::cout << "revieved new message: " << std::endl;
-  std::cout << buffer << std::endl;
-
-  const char *username = "root\r\n";
-  const char *password = "123\r\n";
-
-  int sent = send(sock, username, strlen(username), 0);
-  if (sent < 0) {
-    perror("send");
-    return 8;
-  }
-
-  std::cout << "Uname Send" << std::endl;
-
-  // Some more header after login send
-  bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
-  if (bytes <= 0) {
-    perror("failed to recieve next message (4)");
-    return 9;
-  }
-  buffer[bytes] = '\0';
-  std::cout << "revieved new message: " << std::endl;
-  std::cout << buffer << std::endl;
-  printBytes(buffer, bytes);
-
-  bufferOutEnd = 0;
-  readHeader(buffer, bytes, bufferOut, bufferOutEnd);
-
-  if (!sendBuffer(sock, bufferOut, bufferOutEnd)) {
-    perror("fail");
-    return 12;
-  }
-
-  std::cout << "sned sm header again" << std::endl;
-
-  bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
-  if (bytes <= 0) {
-    perror("failed to recieve next message (4)");
-    return 9;
-  }
-  buffer[bytes] = '\0';
-  std::cout << "revieved new message: " << std::endl;
-  std::cout << buffer << std::endl;
-
-  // Password
-  sent = send(sock, password, strlen(password), 0);
-  if (sent < 0) {
-    perror("send");
-    return 8;
-  }
-
-  std::cout << "password Send" << std::endl;
-
-  for (int i = 0; i < 2;
-       i++) { // it repeats the last command so thats why teres 2
+  // READ ALL STARTING HEADERS AND RESPOND TO THEM WITH IGNORING
+  for (int i = 0;; i++) {
+    std::cout << "\n" << "READING " << i << "\n";
     bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
-    std::cout << "Bytes:" << bytes << std::endl;
+    bufferOutEnd = 0;
     if (bytes <= 0) {
-      break;
+      perror("failed to recive");
+      return 1;
     }
-    buffer[bytes] = '\0';
-    std::cout << buffer;
-  }
-  std::cout << std::endl;
+    if (isHeader(buffer)) {
+      if (!handleTelnetHeader(sock, buffer, bytes, bufferOut, bufferOutEnd)) {
+        return 2;
+      }
+    } else {
+      if (cmdPtr >= commands + cmdCnt)
+        break;
+      bool isLoggedIn = cmdPtr >= commands + 1;  // do this on password sending
+      if (!handleTelnetMessage(*cmdPtr, sock, buffer, bytes, bufferOut,
+                               bufferOutEnd, isLoggedIn)) {
+        return 3;
+      }
 
-  // Try to execute smth
-  const char *pwd = "cat secret\r\n";
-
-  sent = send(sock, pwd, strlen(pwd), 0);
-  if (sent < 0) {
-    perror("send");
-    return 8;
-  }
-
-  std::cout << "cat secret Send" << std::endl;
-
-  for (int i = 0; i < 2; i++) {
-    bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
-    std::cout << "Bytes:" << bytes << std::endl;
-    if (bytes <= 0) {
-      break;
+      cmdPtr++;
     }
-    buffer[bytes] = '\0';
-    // std::cout << "revieved new message: " << std::endl;
-    std::cout << buffer;
   }
+
+  // Print last message recieved
+  buffer[bytes] = '\0';
+  std::cout << "revieved last message: " << std::endl;
+  std::cout << buffer << std::endl;
 
   close(sock);
   return 0;
