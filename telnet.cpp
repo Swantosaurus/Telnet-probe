@@ -26,7 +26,6 @@
 
 void LogInfo(const char* msg) {
   std::cout << "[INFO]" << msg << std::endl;
-  ;
 }
 
 void LogError(const char* msg) {
@@ -92,7 +91,7 @@ class TelnetHandler {
                            char* output_buffer,
                            int& output_buffer_end) {
     const char* ptr = recieved;
-    for (; ptr < recieved + recieved_len * sizeof(char); ptr += sizeof(char)) {
+    for (; ptr < recieved + recieved_len; ptr++) {
       if (*ptr == IAC) {  // start of message
         handleRequest(ptr, output_buffer, output_buffer_end);
       }
@@ -210,7 +209,7 @@ class TelnetHandler {
     // Print last message recieved
     buffer[bytes] = '\0';
     std::ostringstream os;
-    os << "revieved last message: \n" << buffer;
+    os << "recieved last message: \n" << buffer;
 
     LogInfo(os);
     return true;
@@ -273,7 +272,7 @@ class TelnetHandler {
 
   bool telnetRecv(char* buffer, const int& bufferSize, int& bytesRecieved) {
     if (_sock < 0) {
-      LogError("Socker not specified before revieving message");
+      LogError("Socket not specified before revieving message");
       return false;
     }
     bytesRecieved = recv(_sock, buffer, bufferSize, 0);
