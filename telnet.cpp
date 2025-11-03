@@ -90,8 +90,9 @@ class TelnetHandler {
                            const int& recieved_len,
                            char* output_buffer,
                            int& output_buffer_end) {
+    output_buffer_end = 0;
     const char* ptr = recieved;
-    for (; ptr < recieved + recieved_len; ptr++) {
+    for (; ptr < recieved + recieved_len; ptr += 3) {
       if (*ptr == IAC) {  // start of message
         handleRequest(ptr, output_buffer, output_buffer_end);
       }
@@ -112,13 +113,12 @@ class TelnetHandler {
     LogInfo(os);
   }
 
-  bool handleTelnetHeader(const int& sock,
-                          const char* buffer,
+  bool handleTelnetHeader(const char* buffer,
                           const int& bytes,
                           char* bufferOut,
                           int& bufferOutEnd) {
     std::ostringstream os;
-    os << "HEADER    READ" << bytes << "Bytes :";
+    os << "HEADER READ" << bytes << "Bytes :";
     LogInfo(os);
 
     printBytes(buffer, bytes);
@@ -138,7 +138,6 @@ class TelnetHandler {
   }
 
   bool handleTelnetMessage(const char* cmd,
-                           const int& sock,
                            char* buffer,
                            int& bytes,
                            char* bufferOut,
@@ -188,8 +187,7 @@ class TelnetHandler {
         std::ostringstream os2;
         os2 << "found HEADER";
         LogInfo(os2);
-        if (!handleTelnetHeader(_sock, buffer, bytes, bufferOut,
-                                bufferOutEnd)) {
+        if (!handleTelnetHeader(buffer, bytes, bufferOut, bufferOutEnd)) {
           return false;
         }
       } else {
@@ -197,8 +195,8 @@ class TelnetHandler {
           break;
         bool isLoggedIn =
             commandToSend >= commands + 1;  // do this on password sending
-        if (!handleTelnetMessage(*commandToSend, _sock, buffer, bytes,
-                                 bufferOut, bufferOutEnd, isLoggedIn)) {
+        if (!handleTelnetMessage(*commandToSend, buffer, bytes, bufferOut,
+                                 bufferOutEnd, isLoggedIn)) {
           return false;
         }
 
