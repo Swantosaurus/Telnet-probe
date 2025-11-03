@@ -5,7 +5,7 @@
   - telnet
   - telnetd
 
-`/etc/xinted.d/telnet` cotains line:
+`/etc/xinetd.d/telnet` cotains line:
 ```
 service telnet
 {
