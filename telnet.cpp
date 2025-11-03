@@ -3,11 +3,13 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <cstdio>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <ostream>
+#include <sstream>
+
+#define BUFFER_SIZE 1024
 
 // https://datatracker.ietf.org/doc/html/rfc854
 #define WILL char(251)
@@ -19,141 +21,280 @@
 // OPTIONS HERE
 //  https://www.iana.org/assignments/telnet-options/telnet-options.xhtml
 
-// always the basic request contains <IAC , (one of DO WILL), telnet-option>
-// messages ll be longer only if we want to handle specific option
-// since we deny ignore all messages ll be only 3 bytes
-// THEREFORE
-// always we will get 3 bytes
-// 1. IAC
-// 2. DO | DONT | WILL | WONT
-// 3. OPTIONS see the link above but we wont need it here
-//
-// we will ignroe and deny all server requsts until server gives up and setup
-// basic backup default config
-void handleRequest(const char* msg_bytes,
-                   char* output_buffer,
-                   int& output_buffer_end) {
-  char pos0 = msg_bytes[0];
-  char pos1 = msg_bytes[1];
-  char pos2 = msg_bytes[2];
+// PLATFORM IMPLEMENT HERE
+// Platform integraction functions to implement
 
-  if (pos0 != IAC) {
-    perror("not starting with msg sync");
-    return;
+void LogInfo(const char* msg) {
+  std::cout << "[INFO]" << msg << std::endl;
+  ;
+}
+
+void LogError(const char* msg) {
+  std::cout << "[ERROR]" << msg << std::endl;
+}
+
+// Optional functions using streams
+void LogInfo(std::ostringstream& os) {
+  LogInfo(os.str().c_str());
+}
+
+void LogError(std::ostringstream& os) {
+  LogError(os.str().c_str());
+}
+
+class TelnetHandler {
+  int _port = -1;
+  int _sock = -1;
+
+  // always the basic request contains <IAC , (one of DO WILL), telnet-option>
+  // messages ll be longer only if we want to handle specific option
+  // since we deny ignore all messages ll be only 3 bytes
+  // THEREFORE
+  // always we will get 3 bytes
+  // 1. IAC
+  // 2. DO | DONT | WILL | WONT
+  // 3. OPTIONS see the link above but we wont need it here
+  //
+  // we will ignroe and deny all server requsts until server gives up and setup
+  // basic backup default config
+  void handleRequest(const char* msg_bytes,
+                     char* output_buffer,
+                     int& output_buffer_end) {
+    char pos0 = msg_bytes[0];
+    char pos1 = msg_bytes[1];
+    char pos2 = msg_bytes[2];
+
+    if (pos0 != IAC) {
+      LogError("not starting with msg sync");
+      return;
+    }
+    switch (pos2) {  // do not actually need anything here server will
+                     // eventually give up
+      default:
+        if (pos1 == DO) {
+          output_buffer[output_buffer_end++] = IAC;
+          output_buffer[output_buffer_end++] = WONT;
+          output_buffer[output_buffer_end++] = pos2;
+        } else if (pos1 == WILL) {
+          output_buffer[output_buffer_end++] = IAC;
+          output_buffer[output_buffer_end++] = DONT;
+          output_buffer[output_buffer_end++] = pos2;
+        } else {
+          LogError("what is tis");
+        }
+    }
   }
-  switch (pos2) {  // do not actually need anything here server will eventually
-                   // give up
-    default:
-      if (pos1 == DO) {
-        output_buffer[output_buffer_end++] = IAC;
-        output_buffer[output_buffer_end++] = WONT;
-        output_buffer[output_buffer_end++] = pos2;
-      } else if (pos1 == WILL) {
-        output_buffer[output_buffer_end++] = IAC;
-        output_buffer[output_buffer_end++] = DONT;
-        output_buffer[output_buffer_end++] = pos2;
-      } else {
-        perror("what is tis");
+
+  // Reads threw recieved header and returns response data for Telnet in
+  // output_buffer put buffer u recieved from Telnet here if it starts with IAC
+  void processTelnetHeader(const char* recieved,
+                           const int& recieved_len,
+                           char* output_buffer,
+                           int& output_buffer_end) {
+    const char* ptr = recieved;
+    for (; ptr < recieved + recieved_len * sizeof(char); ptr += sizeof(char)) {
+      if (*ptr == IAC) {  // start of message
+        handleRequest(ptr, output_buffer, output_buffer_end);
       }
-  }
-}
-
-// Reads threw recieved header and returns response data for Telnet in
-// output_buffer put buffer u recieved from Telnet here if it starts with IAC
-void processTelnetHeader(const char* recieved,
-                         const int& recieved_len,
-                         char* output_buffer,
-                         int& output_buffer_end) {
-  const char* ptr = recieved;
-  for (; ptr < recieved + recieved_len * sizeof(char); ptr += sizeof(char)) {
-    if (*ptr == IAC) {  // start of message
-      handleRequest(ptr, output_buffer, output_buffer_end);
     }
   }
-}
 
-void printBytes(const char* bytes, const int& bytes_len) {
-  for (int i = 0; i < bytes_len; ++i) {
-    // Print each byte as two hex digits
-    std::cout << std::setw(3) << std::setfill('0')
-              << (static_cast<unsigned int>(
-                     static_cast<unsigned char>(bytes[i])))
-              << " ";
-    if ((i + 1) % 3 == 0)
-      std::cout << "\n";  // optional: new line every 16 bytes
+  void printBytes(const char* bytes, const int& bytes_len) {
+    std::ostringstream os;
+    os << "\n";
+    for (int i = 0; i < bytes_len; ++i) {
+      // Print each byte as two hex digits
+      os << std::setw(3) << std::setfill('0')
+         << (static_cast<unsigned int>(static_cast<unsigned char>(bytes[i])))
+         << " ";
+      if ((i + 1) % 3 == 0)
+        os << "\n";  // optional: new line every 16 bytes
+    }
+    LogInfo(os);
   }
-}
 
-bool sendBuffer(int sock, const char* buffer, int length) {
-  int totalSent = 0;
+  bool handleTelnetHeader(const int& sock,
+                          const char* buffer,
+                          const int& bytes,
+                          char* bufferOut,
+                          int& bufferOutEnd) {
+    std::ostringstream os;
+    os << "HEADER    READ" << bytes << "Bytes :";
+    LogInfo(os);
 
-  while (totalSent < length) {
-    int sent = send(sock, buffer + totalSent, length - totalSent, 0);
-    if (sent < 0) {
-      perror("send");
+    printBytes(buffer, bytes);
+
+    processTelnetHeader(buffer, bytes, bufferOut, bufferOutEnd);
+
+    std::ostringstream os2;
+    os2 << "Sending " << bufferOutEnd << " bytes";
+    LogInfo(os2);
+
+    printBytes(bufferOut, bufferOutEnd);
+    if (!telnetSend(bufferOut, bufferOutEnd)) {
+      LogError("failed to send buffer");
       return false;
     }
-    totalSent += sent;
+    return true;
   }
 
-  std::cout << "Sent " << totalSent << " bytes." << std::endl;
-  return true;
-}
+  bool handleTelnetMessage(const char* cmd,
+                           const int& sock,
+                           char* buffer,
+                           int& bytes,
+                           char* bufferOut,
+                           int& bufferOutEnd,
+                           bool isLoggedIn) {
+    buffer[bytes] = '\0';
+    std::ostringstream os;
+    os << "Recieved string message" << "\n";
+    os << buffer;
 
-bool handleTelnetHeader(const int& sock,
-                        const char* buffer,
-                        const int& bytes,
-                        char* bufferOut,
-                        int& bufferOutEnd) {
-  std::cout << "HEADER    READ" << bytes << "Bytes :" << std::endl;
-  printBytes(buffer, bytes);
+    LogInfo(os);
 
-  processTelnetHeader(buffer, bytes, bufferOut, bufferOutEnd);
+    telnetSend(cmd, strlen(cmd));
 
-  std::cout << "Sending" << bufferOutEnd << "bytes: \n";
-  printBytes(bufferOut, bufferOutEnd);
-  if (!sendBuffer(sock, bufferOut, bufferOutEnd)) {
-    perror("failed to send buffer");
-    return false;
+    // if we are logged in it starts repeating our cmd so we need
+    // read once to read command we send and once to read message
+    // this is just to read and skip the command repeat
+    if (isLoggedIn) {
+      bytes = recv(sock, buffer, BUFFER_SIZE, 0);
+      if (bytes <= 0) {
+        LogError("failed to read repeat message");
+        return false;
+      }
+      buffer[bytes] = '\0';
+      std::ostringstream os2;
+      os2 << "Read repeat command: " << buffer;
+      LogInfo(os2);
+    }
+    return true;
   }
-  return true;
-}
 
-bool handleTelnetMessage(const char* cmd,
-                         const int& sock,
-                         char* buffer,
-                         int& bytes,
-                         char* bufferOut,
-                         int& bufferOutEnd,
-                         bool isLoggedIn) {
-  buffer[bytes] = '\0';
-  std::cout << "Recieved string message" << "\n";
-  std::cout << buffer << std::endl;
+  bool isHeader(const char* buffer) { return *buffer == IAC; }
 
-  int sent = send(sock, cmd, strlen(cmd), 0);
-  if (sent <= 0) {
-    std::cout << "Error sending command " << cmd << std::endl;
-    return false;
+  bool _executeCommands(const char** commands, const int commandCnt) {
+    const char** commandToSend = commands;
+    char buffer[BUFFER_SIZE];     // read in buffer
+    char bufferOut[BUFFER_SIZE];  // output buffer for headers
+    int bufferOutEnd = 0;         // end of the buffer we write the headers to
+    int bytes;                    // read bytes count
+
+    // Communication
+    for (int i = 0;; i++) {
+      std::ostringstream os;
+      os << "READING " << i << "th message";
+      LogInfo(os);
+      bytes = recv(_sock, buffer, BUFFER_SIZE - 1, 0);
+      bufferOutEnd = 0;
+      if (bytes <= 0) {
+        LogError("failed to recive");
+        return false;
+      }
+      if (isHeader(buffer)) {
+        std::ostringstream os2;
+        os2 << "found HEADER";
+        LogInfo(os2);
+        if (!handleTelnetHeader(_sock, buffer, bytes, bufferOut,
+                                bufferOutEnd)) {
+          return false;
+        }
+      } else {
+        if (commandToSend >= commands + commandCnt)
+          break;
+        bool isLoggedIn =
+            commandToSend >= commands + 1;  // do this on password sending
+        if (!handleTelnetMessage(*commandToSend, _sock, buffer, bytes,
+                                 bufferOut, bufferOutEnd, isLoggedIn)) {
+          return false;
+        }
+
+        commandToSend++;
+      }
+    }
+
+    // Print last message recieved
+    buffer[bytes] = '\0';
+    std::ostringstream os;
+    os << "revieved last message: \n" << buffer;
+
+    LogInfo(os);
+    return true;
   }
-  // if we are logged in it starts repeating our cmd so we need
-  // read once to read command we send and once to read message
-  // this is just to read and skip the command repeat
-  if (isLoggedIn) {
-    buffer[bytes++] = '\n';
-    int bytes2 = recv(sock, buffer + bytes, sizeof(buffer) - bytes, 0);
-    if (bytes2 <= 0) {
-      perror("failed to read second message");
+
+ public:
+  bool executeCommands(const char** commands, const int commandCnt) {
+    return _executeCommands(commands, commandCnt);
+  }
+
+  // WARN this has to be set for given platform
+  bool telnetInit(const char* ip, const int port) {
+    _port = port;
+    _sock = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (_sock < 0) {
+      LogError("socket");
       return false;
     }
-    bytes += bytes2;
-  }
-  std::cout << "buffer:" << buffer << std::endl;
-  return true;
-}
 
-bool isHeader(const char* buffer) {
-  return *buffer == IAC;
-}
+    // Server address
+    struct sockaddr_in serverAddr{};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+    if (inet_pton(AF_INET, ip, &serverAddr.sin_addr) <= 0) {
+      LogError("inet_pton");
+      return false;
+    }
+
+    // Connect to Telnet server
+    if (connect(_sock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+      LogError("connect");
+      return false;
+    }
+
+    return true;
+  }
+
+  bool telnetSend(const char* buffer, const int& length) {
+    if (_sock < -1) {
+      LogError("Socket not specified before sending message");
+      return false;
+    }
+    std::ostringstream os;
+    int totalSent = 0;
+
+    while (totalSent < length) {
+      int sent = send(_sock, buffer + totalSent, length - totalSent, 0);
+      if (sent < 0) {
+        LogError("send");
+        return false;
+      }
+      totalSent += sent;
+    }
+
+    os << "Sent " << totalSent << " bytes:\n" << buffer;
+    LogInfo(os);
+    return true;
+  }
+
+  bool telnetRecv(char* buffer, const int& bufferSize, int& bytesRecieved) {
+    if (_sock < 0) {
+      LogError("Socker not specified before revieving message");
+      return false;
+    }
+    bytesRecieved = recv(_sock, buffer, bufferSize, 0);
+    if (bytesRecieved <= 0) {
+      LogError("Failed to recive message");
+      return false;
+    }
+    return true;
+  }
+
+  void telnetClose() {
+    close(_sock);
+    _port = -1;
+  }
+};
 
 int main() {
   // Telnet address
@@ -168,71 +309,24 @@ int main() {
                              // might be hanging session from previous return
                              // password,
                              username, password, "cat secret\r\n"};
-  const char* commandToSend = commands[0];
   const int cmdCnt = sizeof(commands) / sizeof(commands[0]);
 
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if (sock < 0) {
-    perror("socket");
+  std::ostringstream os;
+  os << "Connecting...";
+  LogInfo(os);
+
+  TelnetHandler telnet;
+  if (!telnet.telnetInit(serverIp, serverPort)) {
     return 1;
   }
 
-  // Server address
-  struct sockaddr_in serverAddr{};
-  serverAddr.sin_family = AF_INET;
-  serverAddr.sin_port = htons(serverPort);
-  if (inet_pton(AF_INET, serverIp, &serverAddr.sin_addr) <= 0) {
-    perror("inet_pton");
-    return 1;
-  }
+  std::ostringstream os2;
+  os2 << "Connected to " << serverIp << ":" << serverPort;
+  LogInfo(os2);
 
-  // Connect to Telnet server
-  if (connect(sock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
-    perror("connect");
-    return 1;
-  }
+  telnet.executeCommands(commands, cmdCnt);
 
-  std::cout << "Connected to " << serverIp << ":" << serverPort << std::endl;
+  telnet.telnetClose();
 
-  // this should be enuf but if u got long promtp at start u might struggle
-  char buffer[1024];     // read in buffer
-  char bufferOut[1024];  // output buffer for headers
-  int bufferOutEnd = 0;  // end of the buffer we write the headers to
-  int bytes;             // read bytes count
-
-  // Communication
-  for (int i = 0;; i++) {
-    std::cout << "READING " << i << "\n";
-    bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
-    bufferOutEnd = 0;
-    if (bytes <= 0) {
-      perror("failed to recive");
-      return 1;
-    }
-    if (isHeader(buffer)) {
-      std::cout << "found HEADER" << std::endl;
-      if (!handleTelnetHeader(sock, buffer, bytes, bufferOut, bufferOutEnd)) {
-        return 2;
-      }
-    } else {
-      bool isLoggedIn =
-          commandToSend >= commands[1];  // do this on password sending
-      if (!handleTelnetMessage(commandToSend, sock, buffer, bytes, bufferOut,
-                               bufferOutEnd, isLoggedIn)) {
-        return 3;
-      }
-
-      commandToSend++;
-      if (commandToSend >= commands[0] + cmdCnt)
-        break;
-    }
-  }
-
-  // Print last message recieved
-  buffer[bytes] = '\0';
-  std::cout << "revieved last message: " << std::endl;
-  std::cout << buffer << std::endl;
-
-  close(sock);
   return 0;
 }
