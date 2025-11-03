@@ -158,15 +158,12 @@ class TelnetHandler {
     // read once to read command we send and once to read message
     // this is just to read and skip the command repeat
     if (isLoggedIn) {
-      bytes = recv(sock, buffer, BUFFER_SIZE, 0);
-      if (bytes <= 0) {
-        LogError("failed to read repeat message");
+      std::ostringstream os2;
+      os2 << "Reading command repeat";
+      LogInfo(os2);
+      if (!telnetRecv(buffer, BUFFER_SIZE, bytes)) {
         return false;
       }
-      buffer[bytes] = '\0';
-      std::ostringstream os2;
-      os2 << "Read repeat command: " << buffer;
-      LogInfo(os2);
     }
     return true;
   }
@@ -185,10 +182,7 @@ class TelnetHandler {
       std::ostringstream os;
       os << "READING " << i << "th message";
       LogInfo(os);
-      bytes = recv(_sock, buffer, BUFFER_SIZE - 1, 0);
-      bufferOutEnd = 0;
-      if (bytes <= 0) {
-        LogError("failed to recive");
+      if (!telnetRecv(buffer, BUFFER_SIZE, bytes)) {
         return false;
       }
       if (isHeader(buffer)) {
@@ -256,7 +250,7 @@ class TelnetHandler {
   }
 
   bool telnetSend(const char* buffer, const int& length) {
-    if (_sock < -1) {
+    if (_sock < 0) {
       LogError("Socket not specified before sending message");
       return false;
     }
@@ -293,6 +287,7 @@ class TelnetHandler {
   void telnetClose() {
     close(_sock);
     _port = -1;
+    _sock = -1;
   }
 };
 
