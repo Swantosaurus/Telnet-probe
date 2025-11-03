@@ -1,13 +1,14 @@
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+#include <WiFi.h>
 #include <cstring>
 #include <iomanip>
-#include <iostream>
 #include <ostream>
 #include <sstream>
+#include "M5Unified.hpp"
+
+const char* wifiSSID = "";
+const char* wifiPass = "";
+const char* telnetHost = "192.168.50.189";
+#define TELNET_PORT 23
 
 #define BUFFER_SIZE 1024
 
@@ -25,11 +26,13 @@
 // Platform integraction functions to implement
 
 void LogInfo(const char* msg) {
-  std::cout << "[INFO]" << msg << std::endl;
+  Serial.print("[INFO] ");
+  Serial.println(msg);
 }
 
 void LogError(const char* msg) {
-  std::cout << "[ERROR]" << msg << std::endl;
+  Serial.print("[ERROR] ");
+  Serial.println(msg);
 }
 
 // Optional functions using streams
@@ -44,6 +47,7 @@ void LogError(std::ostringstream& os) {
 class TelnetHandler {
   int _port = -1;
   int _sock = -1;
+  WiFiClient client;
 
   // always the basic request contains <IAC , (one of DO WILL), telnet-option>
   // messages will be longer only if we want to handle specific option
@@ -86,19 +90,26 @@ class TelnetHandler {
 
   // Reads recieved header and returns response data for Telnet in
   // output_buffer put buffer u recieved from Telnet here if it starts with IAC
-  bool processTelnetHeader(const char* recieved,
-                           const int& recieved_len,
+  bool processTelnetHeader(const char**& cmd,
+                           char* recieved,
+                           int& recieved_len,
                            char* output_buffer,
                            int& output_buffer_end) {
-    if (recieved_len % 3 != 0) {
-      LogError("Unsupported header");
-      return false;
-    }
     output_buffer_end = 0;
-    const char* ptr = recieved;
+    char* ptr = recieved;
+    int rest;
     for (; ptr < recieved + recieved_len; ptr += 3) {
       if (*ptr == IAC) {  // start of message
         handleRequest(ptr, output_buffer, output_buffer_end);
+      } else {
+        // not a header anymore
+        rest = recieved_len - (ptr - recieved) - 1;
+        std::ostringstream os;
+        os << "eating rest of size: " << rest;
+        LogInfo(os);
+
+        return true;  // handleTelnetMessage(cmd, ptr, rest, output_buffer,
+                      //                     output_buffer_end, false);
       }
     }
     return true;
@@ -118,17 +129,18 @@ class TelnetHandler {
     LogInfo(os);
   }
 
-  bool handleTelnetHeader(const char* buffer,
-                          const int& bytes,
+  bool handleTelnetHeader(const char**& cmd,
+                          char* buffer,
+                          int& bytes,
                           char* bufferOut,
                           int& bufferOutEnd) {
     std::ostringstream os;
-    os << "HEADER READ" << bytes << "Bytes :";
+    os << "HEADER READ " << bytes << " Bytes :";
     LogInfo(os);
 
     printBytes(buffer, bytes);
 
-    if (!processTelnetHeader(buffer, bytes, bufferOut, bufferOutEnd)) {
+    if (!processTelnetHeader(cmd, buffer, bytes, bufferOut, bufferOutEnd)) {
       LogError("Failed to process telnet header");
       return false;
     }
@@ -136,29 +148,40 @@ class TelnetHandler {
     std::ostringstream os2;
     os2 << "Sending " << bufferOutEnd << " bytes";
     LogInfo(os2);
-
     printBytes(bufferOut, bufferOutEnd);
     if (!telnetSend(bufferOut, bufferOutEnd)) {
       LogError("failed to send buffer");
       return false;
     }
+    if (bytes != bufferOutEnd) {
+      // LogInfo("SKIPPING SENDING HEADER IT CONTAINS DATA");
+      if (!handleTelnetMessage(cmd, buffer + bufferOutEnd, bytes, bufferOut,
+                               bufferOutEnd, false)) {
+        return false;
+      }
+    }
     return true;
   }
 
-  bool handleTelnetMessage(const char* cmd,
+  bool handleTelnetMessage(const char**& cmd,
                            char* buffer,
                            int& bytes,
                            char* bufferOut,
                            int& bufferOutEnd,
                            bool isLoggedIn) {
     buffer[bytes] = '\0';
+
     std::ostringstream os;
     os << "Recieved string message" << "\n";
     os << buffer;
-
     LogInfo(os);
 
-    if (!telnetSend(cmd, strlen(cmd))) {
+    char* cpyCmd = new char[strlen(*cmd) + 1];
+    strcpy(cpyCmd, *cmd);
+    cmd++;
+
+    if (!telnetSend(cpyCmd, strlen(cpyCmd))) {
+      delete[] cpyCmd;
       return false;
     }
 
@@ -170,9 +193,11 @@ class TelnetHandler {
       os2 << "Reading command repeat";
       LogInfo(os2);
       if (!telnetRecv(buffer, BUFFER_SIZE, bytes)) {
+        delete[] cpyCmd;
         return false;
       }
     }
+    delete[] cpyCmd;
     return true;
   }
 
@@ -197,20 +222,19 @@ class TelnetHandler {
         std::ostringstream os2;
         os2 << "found HEADER";
         LogInfo(os2);
-        if (!handleTelnetHeader(buffer, bytes, bufferOut, bufferOutEnd)) {
+        if (!handleTelnetHeader(commandToSend, buffer, bytes, bufferOut,
+                                bufferOutEnd)) {
           return false;
         }
       } else {
         if (commandToSend >= commands + commandCnt)
           break;
-        bool isLoggedIn =
-            commandToSend >= commands + 1;  // do this on password sending
-        if (!handleTelnetMessage(*commandToSend, buffer, bytes, bufferOut,
+        bool isLoggedIn = false;
+        // commandToSend >= commands + 2;  // do this on password sending
+        if (!handleTelnetMessage(commandToSend, buffer, bytes, bufferOut,
                                  bufferOutEnd, isLoggedIn)) {
           return false;
         }
-
-        commandToSend++;
       }
     }
 
@@ -231,79 +255,53 @@ class TelnetHandler {
   // WARN this has to be set for given platform
   bool telnetInit(const char* ip, const int port) {
     _port = port;
-    _sock = socket(AF_INET, SOCK_STREAM, 0);
-
-    if (_sock < 0) {
-      LogError("socket");
-      return false;
+    if (!client.connect(ip, port)) {
+      std::ostringstream os;
+      os << "Error connecting telnet" << telnetHost << ":" << port;
+      LogError(os);
     }
 
-    // Server address
-    struct sockaddr_in serverAddr{};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(port);
-    if (inet_pton(AF_INET, ip, &serverAddr.sin_addr) <= 0) {
-      LogError("inet_pton");
-      return false;
-    }
-
-    // Connect to Telnet server
-    if (connect(_sock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
-      LogError("connect");
-      return false;
-    }
+    std::ostringstream os;
+    os << "Connected to telnet server";
+    LogInfo(os);
 
     return true;
   }
 
-  bool telnetSend(const char* buffer, const int& length) {
-    if (_sock < 0) {
-      LogError("Socket not specified before sending message");
+  bool telnetSend(char* buffer, const int& length) {
+    int sent = client.write(buffer, length);
+    if (sent <= 0) {
+      LogError("failed to send data");
       return false;
     }
+    buffer[length] = '\0';
     std::ostringstream os;
-    int totalSent = 0;
-
-    while (totalSent < length) {
-      int sent = send(_sock, buffer + totalSent, length - totalSent, 0);
-      if (sent < 0) {
-        LogError("send");
-        return false;
-      }
-      totalSent += sent;
-    }
-
-    os << "Sent " << totalSent << " bytes:\n" << buffer;
+    os << "Sending data:\n" << buffer;
     LogInfo(os);
     return true;
   }
 
   bool telnetRecv(char* buffer, const int& bufferSize, int& bytesRecieved) {
-    if (_sock < 0) {
-      LogError("Socket not specified before recieving message");
-      return false;
-    }
-    bytesRecieved = recv(_sock, buffer, bufferSize, 0);
+    bytesRecieved = client.readBytes(buffer, bufferSize);
     if (bytesRecieved <= 0) {
-      LogError("Failed to recieve message");
+      LogError("failed to read buffer");
       return false;
     }
+    buffer[bytesRecieved] = '\0';
+    std::ostringstream os;
+    os << "Recieved new message:\n";
+    os << buffer;
+    LogInfo(os);
+
     return true;
   }
 
-  void telnetClose() {
-    if (_sock >= 0) {
-      close(_sock);
-    }
-    _port = -1;
-    _sock = -1;
-  }
+  void telnetClose() { client.~WiFiClient(); }
 };
 
-int main() {
-  // Telnet address
-  const char* serverIp = "192.168.50.189";
-  const int serverPort = 23;
+void setup() {
+  M5.begin(M5.config());
+  M5.delay(200);
 
   // Telnet credentials
   const char* username = "root\r\n";  //
@@ -315,22 +313,32 @@ int main() {
                              username, password, "cat secret\r\n"};
   const int cmdCnt = sizeof(commands) / sizeof(commands[0]);
 
-  std::ostringstream os;
-  os << "Connecting...";
-  LogInfo(os);
+  Serial.begin(9600);
 
-  TelnetHandler telnet;
-  if (!telnet.telnetInit(serverIp, serverPort)) {
-    return 1;
+  M5.Display.setTextSize(4);
+
+  WiFi.begin(wifiSSID, wifiPass);
+
+  Serial.print("Connecting ");
+  Serial.print(wifiSSID);
+  Serial.print(" ");
+  Serial.println(wifiPass);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print("Status: ");
+    Serial.println(WiFi.status());
+    M5.Display.print(".");
   }
 
-  std::ostringstream os2;
-  os2 << "Connected to " << serverIp << ":" << serverPort;
-  LogInfo(os2);
+  M5.Display.print("WL_CONNECTED");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
 
+  TelnetHandler telnet;
+  telnet.telnetInit(telnetHost, TELNET_PORT);
   telnet.executeCommands(commands, cmdCnt);
-
   telnet.telnetClose();
-
-  return 0;
 }
+
+void loop() {}
