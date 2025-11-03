@@ -128,7 +128,10 @@ class TelnetHandler {
 
     printBytes(buffer, bytes);
 
-    processTelnetHeader(buffer, bytes, bufferOut, bufferOutEnd);
+    if (!processTelnetHeader(buffer, bytes, bufferOut, bufferOutEnd)) {
+      LogError("Failed to process telnet header");
+      return false;
+    }
 
     std::ostringstream os2;
     os2 << "Sending " << bufferOutEnd << " bytes";
@@ -155,7 +158,9 @@ class TelnetHandler {
 
     LogInfo(os);
 
-    telnetSend(cmd, strlen(cmd));
+    if (!telnetSend(cmd, strlen(cmd))) {
+      return false;
+    }
 
     // if we are logged in it starts repeating our cmd so we need
     // read once to read command we send and once to read message
