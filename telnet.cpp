@@ -46,15 +46,15 @@ class TelnetHandler {
   int _sock = -1;
 
   // always the basic request contains <IAC , (one of DO WILL), telnet-option>
-  // messages ll be longer only if we want to handle specific option
-  // since we deny ignore all messages ll be only 3 bytes
+  // messages will be longer only if we want to handle specific option
+  // since we deny ignore all messages will be only 3 bytes
   // THEREFORE
   // always we will get 3 bytes
   // 1. IAC
   // 2. DO | DONT | WILL | WONT
   // 3. OPTIONS see the link above but we wont need it here
   //
-  // we will ignroe and deny all server requsts until server gives up and setup
+  // we will ignore and deny all server requests until server gives up and setup
   // basic backup default config
   void handleRequest(const char* msg_bytes,
                      char* output_buffer,
@@ -153,7 +153,7 @@ class TelnetHandler {
                            bool isLoggedIn) {
     buffer[bytes] = '\0';
     std::ostringstream os;
-    os << "Recieved string message" << "\n";
+    os << "Received string message" << "\n";
     os << buffer;
 
     LogInfo(os);
@@ -217,7 +217,7 @@ class TelnetHandler {
     // Print last message recieved
     buffer[bytes] = '\0';
     std::ostringstream os;
-    os << "recieved last message: \n" << buffer;
+    os << "Received last message: \n" << buffer;
 
     LogInfo(os);
     return true;
@@ -292,7 +292,9 @@ class TelnetHandler {
   }
 
   void telnetClose() {
-    close(_sock);
+    if (_sock >= 0) {
+      close(_sock);
+    }
     _port = -1;
     _sock = -1;
   }
