@@ -153,7 +153,7 @@ class TelnetHandler {
                            bool isLoggedIn) {
     buffer[bytes] = '\0';
     std::ostringstream os;
-    os << "Received string message" << "\n";
+    os << "Recieved string message" << "\n";
     os << buffer;
 
     LogInfo(os);
@@ -217,7 +217,7 @@ class TelnetHandler {
     // Print last message recieved
     buffer[bytes] = '\0';
     std::ostringstream os;
-    os << "Received last message: \n" << buffer;
+    os << "Recieved last message: \n" << buffer;
 
     LogInfo(os);
     return true;
@@ -280,12 +280,12 @@ class TelnetHandler {
 
   bool telnetRecv(char* buffer, const int& bufferSize, int& bytesRecieved) {
     if (_sock < 0) {
-      LogError("Socket not specified before receieving message");
+      LogError("Socket not specified before recieving message");
       return false;
     }
     bytesRecieved = recv(_sock, buffer, bufferSize, 0);
     if (bytesRecieved <= 0) {
-      LogError("Failed to receive message");
+      LogError("Failed to recieve message");
       return false;
     }
     return true;
