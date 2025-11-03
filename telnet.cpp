@@ -84,12 +84,16 @@ class TelnetHandler {
     }
   }
 
-  // Reads threw recieved header and returns response data for Telnet in
+  // Reads recieved header and returns response data for Telnet in
   // output_buffer put buffer u recieved from Telnet here if it starts with IAC
-  void processTelnetHeader(const char* recieved,
+  bool processTelnetHeader(const char* recieved,
                            const int& recieved_len,
                            char* output_buffer,
                            int& output_buffer_end) {
+    if (recieved_len % 3 != 0) {
+      LogError("Unsupported header");
+      return false;
+    }
     output_buffer_end = 0;
     const char* ptr = recieved;
     for (; ptr < recieved + recieved_len; ptr += 3) {
@@ -97,6 +101,7 @@ class TelnetHandler {
         handleRequest(ptr, output_buffer, output_buffer_end);
       }
     }
+    return true;
   }
 
   void printBytes(const char* bytes, const int& bytes_len) {
@@ -170,10 +175,10 @@ class TelnetHandler {
 
   bool _executeCommands(const char** commands, const int commandCnt) {
     const char** commandToSend = commands;
-    char buffer[BUFFER_SIZE];     // read in buffer
-    char bufferOut[BUFFER_SIZE];  // output buffer for headers
-    int bufferOutEnd = 0;         // end of the buffer we write the headers to
-    int bytes;                    // read bytes count
+    char buffer[BUFFER_SIZE];         // read in buffer
+    char bufferOut[BUFFER_SIZE + 1];  // output buffer for headers
+    int bufferOutEnd = 0;  // end of the buffer we write the headers to
+    int bytes;             // read bytes count
 
     // Communication
     for (int i = 0;; i++) {
@@ -270,12 +275,12 @@ class TelnetHandler {
 
   bool telnetRecv(char* buffer, const int& bufferSize, int& bytesRecieved) {
     if (_sock < 0) {
-      LogError("Socket not specified before revieving message");
+      LogError("Socket not specified before receieving message");
       return false;
     }
     bytesRecieved = recv(_sock, buffer, bufferSize, 0);
     if (bytesRecieved <= 0) {
-      LogError("Failed to recive message");
+      LogError("Failed to receive message");
       return false;
     }
     return true;
